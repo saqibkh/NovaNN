@@ -8,6 +8,8 @@ name: GPU Simulator
 # does not replace it.
 
 on:
+  push:
+    branches: [review-fixes]
   workflow_dispatch:
   pull_request:
     paths:
@@ -123,3 +125,37 @@ jobs:
       # Same selection and guards as the CUDA job.
       - name: GPU tests
         run: scripts/ci/run_gpu_tests.sh hip test
+
+  negative-check:
+    name: Negative check (stub vgpu, scratch only)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          persist-credentials: false
+      - name: Exit code and guards survive a failing ctest with no summary
+        run: |
+          mkdir -p "$RUNNER_TEMP/stub"
+          cat > "$RUNNER_TEMP/stub/vgpu" <<'STUB'
+          #!/usr/bin/env bash
+          echo "stub output without any summary line"
+          [[ -z "${STUB_LINE:-}" ]] || echo "$STUB_LINE"
+          exit "${STUB_RC:-0}"
+          STUB
+          chmod +x "$RUNNER_TEMP/stub/vgpu"
+          export PATH="$RUNNER_TEMP/stub:$PATH"
+          check() { # expected_rc, then env assignments
+            local want="$1"; shift
+            local got=0
+            env "$@" scripts/ci/run_gpu_tests.sh cuda test || got=$?
+            echo "RESULT expected=$want got=$got ($*)"
+            [[ "$got" -eq "$want" ]] || { echo "MISMATCH"; fail=1; }
+          }
+          fail=0
+          check 7 STUB_RC=7
+          check 1 STUB_RC=0 "STUB_LINE=No CUDA device found"
+          check 0 STUB_RC=0
+          check 1 STUB_RC=0 "STUB_LINE=VirtualGPU error [illegal-instruction]"
+          check 0 STUB_RC=0 "STUB_LINE=VirtualGPU error [out-of-memory]"
+          check 0 STUB_RC=0 "STUB_LINE=No HIP device"
+          exit "$fail"
